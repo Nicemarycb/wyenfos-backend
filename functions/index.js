@@ -14,16 +14,43 @@ admin.initializeApp({
 const storage = admin.storage();
 const app = express();
 
+// app.use(cors({
+//   origin: ["http://localhost:3000",
+//     "https://wyenfos-b7b96.web.app",
+//     "https://us-central1-wyenfos-b7b96.cloudfunctions.net",
+//     "https://api-wyenfos-b7b96-us-central1.cloudfunctions.net"],
+//   methods: ["GET", "POST", "PUT", "DELETE"],
+//   allowedHeaders: ["Content-Type", "Authorization"],
+//   credentials: true,
+// }));
+// app.use(express.json());
 app.use(cors({
-  origin: ["http://localhost:3000", "https://wyenfos-b7b96.web.app", "https://us-central1-wyenfos-b7b96.cloudfunctions.net",
-    "https://api-wyenfos-b7b96-us-central1.cloudfunctions.net"],
+  origin: [
+    "http://localhost:3000", // For local development
+    "https://wyenfos-b7b96.web.app", // Firebase Hosting default
+    "https://wyenfosinfotech.com", // Your custom domain
+    "https://us-central1-wyenfos-b7b96.cloudfunctions.net",
+    "https://api-wyenfos-b7b96-us-central1.cloudfunctions.net",
+  ],
   methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 }));
-app.use(express.json());
 
-// Authentication middleware
+// // Authentication middleware
+// const authenticate = async (req, res, next) => {
+//   const authHeader = req.headers.authorization;
+//   if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//     return res.status(401).json({error: "Unauthorized: No token provided"});
+//   }
+//   const idToken = authHeader.split("Bearer ")[1];
+//   try {
+//     await admin.auth().verifyIdToken(idToken);
+//     next();
+//   } catch (error) {
+//     res.status(401).json({error: `Unauthorized: Invalid token - ${error.message}`});
+//   }
+// };
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -32,12 +59,14 @@ const authenticate = async (req, res, next) => {
   const idToken = authHeader.split("Bearer ")[1];
   try {
     await admin.auth().verifyIdToken(idToken);
+    if (req.headers.referer && !req.headers.referer.includes("/admin/wyenfosadminfhghgj/x7kP9mQ2jL5vR8nT")) {
+      return res.status(403).json({error: "Forbidden: Invalid admin access"});
+    }
     next();
   } catch (error) {
     res.status(401).json({error: `Unauthorized: Invalid token - ${error.message}`});
   }
 };
-
 // Team Routes
 app.get("/team", async (_req, res) => {
   try {
@@ -333,6 +362,22 @@ app.put("/internship-inquiries/:id", authenticate, async (req, res) => {
     res.json({message: `Internship inquiry ${status.toLowerCase()}`});
   } catch (error) {
     res.status(500).json({error: `Failed to update internship inquiry: ${error.message}`});
+  }
+});
+app.delete("/internship-inquiries/:id", authenticate, async (req, res) => {
+  try {
+    const {id} = req.params;
+    const docRef = admin.firestore().collection("internship_inquiries").doc(id);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({error: "Internship inquiry not found"});
+    }
+
+    await docRef.delete();
+    res.json({message: "Internship inquiry deleted"});
+  } catch (error) {
+    res.status(500).json({error: `Failed to delete internship inquiry: ${error.message}`});
   }
 });
 
