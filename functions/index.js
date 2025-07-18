@@ -14,21 +14,11 @@ admin.initializeApp({
 const storage = admin.storage();
 const app = express();
 
-// app.use(cors({
-//   origin: ["http://localhost:3000",
-//     "https://wyenfos-b7b96.web.app",
-//     "https://us-central1-wyenfos-b7b96.cloudfunctions.net",
-//     "https://api-wyenfos-b7b96-us-central1.cloudfunctions.net"],
-//   methods: ["GET", "POST", "PUT", "DELETE"],
-//   allowedHeaders: ["Content-Type", "Authorization"],
-//   credentials: true,
-// }));
-// app.use(express.json());
 app.use(cors({
   origin: [
-    "http://localhost:3000", // For local development
-    "https://wyenfos-b7b96.web.app", // Firebase Hosting default
-    "https://wyenfosinfotech.com", // Your custom domain
+    "http://localhost:3000",
+    "https://wyenfos-b7b96.web.app",
+    "https://wyenfosinfotech.com",
     "https://us-central1-wyenfos-b7b96.cloudfunctions.net",
     "https://api-wyenfos-b7b96-us-central1.cloudfunctions.net",
   ],
@@ -36,21 +26,9 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 }));
+app.use(express.json());
 
-// // Authentication middleware
-// const authenticate = async (req, res, next) => {
-//   const authHeader = req.headers.authorization;
-//   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-//     return res.status(401).json({error: "Unauthorized: No token provided"});
-//   }
-//   const idToken = authHeader.split("Bearer ")[1];
-//   try {
-//     await admin.auth().verifyIdToken(idToken);
-//     next();
-//   } catch (error) {
-//     res.status(401).json({error: `Unauthorized: Invalid token - ${error.message}`});
-//   }
-// };
+// Authentication middleware
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -59,7 +37,7 @@ const authenticate = async (req, res, next) => {
   const idToken = authHeader.split("Bearer ")[1];
   try {
     await admin.auth().verifyIdToken(idToken);
-    if (req.headers.referer && !req.headers.referer.includes("/admin/wyenfosadminfhghgj/x7kP9mQ2jL5vR8nT")) {
+    if (req.headers.referer && !req.headers.referer.includes("")) {
       return res.status(403).json({error: "Forbidden: Invalid admin access"});
     }
     next();
@@ -67,6 +45,7 @@ const authenticate = async (req, res, next) => {
     res.status(401).json({error: `Unauthorized: Invalid token - ${error.message}`});
   }
 };
+
 // Team Routes
 app.get("/team", async (_req, res) => {
   try {
@@ -138,7 +117,7 @@ app.post("/team", authenticate, async (req, res) => {
       const qrFile = bucket.file(qrFileName);
       const qrBuffer = await QRCode.toBuffer(qrData, {type: "png"});
       await qrFile.save(qrBuffer, {contentType: "image/png"});
-      const [url] = await qrFile.getSignedUrl({action: "read", expires: "03-09-2491"});
+      const [url] = await qrFile.getSignedUrl({action: "read", expires: "03-09-2491"}); // Fixed: Changed 'file' to 'qrFile'
       qrCodeUrl = url;
     } catch (error) {
       await docRef.delete();
@@ -271,17 +250,32 @@ app.get("/clients", async (_req, res) => {
 
 app.post("/clients", authenticate, async (req, res) => {
   try {
-    const {name, logo, shortDescription, fullDescription, collaboration, impact} = req.body;
+    const {name, logo, shortDescription, fullDescription, collaboration, impact, website} = req.body;
     if (!name) {
       return res.status(400).json({error: "Missing required field: name"});
     }
+
+    let logoUrl = "";
+    if (logo && logo.startsWith("data:image")) {
+      const bucket = storage.bucket();
+      const fileName = `clients/${Date.now()}_logo.jpg`;
+      const file = bucket.file(fileName);
+      const base64Data = logo.split(",")[1];
+      const buffer = Buffer.from(base64Data, "base64");
+      await file.save(buffer, {contentType: "image/jpeg"});
+      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
+      logoUrl = url;
+    }
+
     const docRef = await admin.firestore().collection("clients").add({
       name,
-      logo: logo || "",
+      logo: logoUrl,
       shortDescription: shortDescription || "",
       fullDescription: fullDescription || "",
       collaboration: collaboration || "",
       impact: impact || "",
+      website: website || "",
+      createdAt: FieldValue.serverTimestamp(),
     });
     res.status(201).json({id: docRef.id, message: "Client added"});
   } catch (error) {
@@ -292,17 +286,32 @@ app.post("/clients", authenticate, async (req, res) => {
 app.put("/clients/:id", authenticate, async (req, res) => {
   try {
     const {id} = req.params;
-    const {name, logo, shortDescription, fullDescription, collaboration, impact} = req.body;
+    const {name, logo, shortDescription, fullDescription, collaboration, impact, website} = req.body;
     if (!name) {
       return res.status(400).json({error: "Missing required field: name"});
     }
+
+    let logoUrl = logo;
+    if (logo && logo.startsWith("data:image")) {
+      const bucket = storage.bucket();
+      const fileName = `clients/${Date.now()}_logo.jpg`;
+      const file = bucket.file(fileName);
+      const base64Data = logo.split(",")[1];
+      const buffer = Buffer.from(base64Data, "base64");
+      await file.save(buffer, {contentType: "image/jpeg"});
+      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
+      logoUrl = url;
+    }
+
     await admin.firestore().collection("clients").doc(id).update({
       name,
-      logo: logo || "",
+      logo: logoUrl,
       shortDescription: shortDescription || "",
       fullDescription: fullDescription || "",
       collaboration: collaboration || "",
       impact: impact || "",
+      website: website || "",
+      updatedAt: FieldValue.serverTimestamp(),
     });
     res.json({message: "Client updated"});
   } catch (error) {
@@ -313,7 +322,31 @@ app.put("/clients/:id", authenticate, async (req, res) => {
 app.delete("/clients/:id", authenticate, async (req, res) => {
   try {
     const {id} = req.params;
-    await admin.firestore().collection("clients").doc(id).delete();
+    const docRef = admin.firestore().collection("clients").doc(id);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({error: "Client not found"});
+    }
+
+    if (doc.data().logo) {
+      try {
+        const fileName = doc.data().logo.split("/").pop().split("?")[0];
+        const filePath = `clients/${fileName}`;
+        const file = storage.bucket().file(filePath);
+        const [exists] = await file.exists();
+        if (exists) {
+          await file.delete();
+          console.log(`Deleted logo: ${filePath}`);
+        } else {
+          console.warn(`Logo not found in Storage: ${filePath}`);
+        }
+      } catch (err) {
+        console.error(`Failed to delete logo: ${err.message}`);
+      }
+    }
+
+    await docRef.delete();
     res.json({message: "Client deleted"});
   } catch (error) {
     res.status(500).json({error: `Failed to delete client: ${error.message}`});
@@ -364,6 +397,7 @@ app.put("/internship-inquiries/:id", authenticate, async (req, res) => {
     res.status(500).json({error: `Failed to update internship inquiry: ${error.message}`});
   }
 });
+
 app.delete("/internship-inquiries/:id", authenticate, async (req, res) => {
   try {
     const {id} = req.params;
@@ -534,7 +568,7 @@ app.put("/advertisements/:id", authenticate, async (req, res) => {
     });
     res.json({message: "Advertisement updated"});
   } catch (error) {
-    res.status(500).json({error: `Failed to delete advertisement: ${error.message}`});
+    res.status(500).json({error: `Failed to update advertisement: ${error.message}`});
   }
 });
 
@@ -551,13 +585,11 @@ app.delete("/advertisements/:id", authenticate, async (req, res) => {
     const data = doc.data();
     const deletionErrors = [];
 
-    // Delete image from Storage if it exists
     if (data.image) {
       try {
         const fileName = data.image.split("/").pop().split("?")[0];
         const filePath = `advertisements/${fileName}`;
         const file = storage.bucket().file(filePath);
-        // Check if file exists before attempting deletion
         const [exists] = await file.exists();
         if (exists) {
           await file.delete();
@@ -571,13 +603,11 @@ app.delete("/advertisements/:id", authenticate, async (req, res) => {
       }
     }
 
-    // Delete video from Storage if it exists
     if (data.video) {
       try {
         const fileName = data.video.split("/").pop().split("?")[0];
         const filePath = `advertisements/${fileName}`;
         const file = storage.bucket().file(filePath);
-        // Check if file exists before attempting deletion
         const [exists] = await file.exists();
         if (exists) {
           await file.delete();
@@ -591,7 +621,6 @@ app.delete("/advertisements/:id", authenticate, async (req, res) => {
       }
     }
 
-    // Delete Firestore document
     await docRef.delete();
     console.log(`Deleted Firestore document: advertisements/${id}`);
 
