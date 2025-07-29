@@ -1,641 +1,73 @@
 const functions = require("firebase-functions");
-const admin = require("firebase-admin");
 const express = require("express");
-const cors = require("cors");
-const QRCode = require("qrcode");
-const serviceAccount = require("./serviceAccountKey.json");
-const {FieldValue} = require("firebase-admin/firestore");
+const {setupMiddleware} = require("./middleware");
+const {setupTeamRoutes} = require("./routes/teamRoutes");
+const {setupClientRoutes} = require("./routes/clientRoutes");
+const {setupInternshipRoutes} = require("./routes/internshipRoutes");
+const {setupContactRoutes} = require("./routes/contactRoutes");
+const {setupAdvertisementRoutes} = require("./routes/advertisementRoutes");
+const {requestEmailChangeHandler} = require("./requestEmailChange");
+const {requestPasswordChangeHandler} = require("./requestPasswordChange");
+const {admin} = require("./firebaseConfig");
+const bcrypt = require("bcryptjs");
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  storageBucket: "wyenfos-b7b96.firebasestorage.app",
-});
-
-const storage = admin.storage();
+// Initialize Express app
 const app = express();
 
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "https://wyenfos-b7b96.web.app",
-    "https://wyenfosinfotech.com",
-    "https://us-central1-wyenfos-b7b96.cloudfunctions.net",
-    "https://api-wyenfos-b7b96-us-central1.cloudfunctions.net",
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-}));
-app.use(express.json());
+// Setup middleware (CORS, JSON body parsing)
+setupMiddleware(app);
 
-// Authentication middleware
-const authenticate = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({error: "Unauthorized: No token provided"});
+// Setup existing routes for various management sections
+setupTeamRoutes(app);
+setupClientRoutes(app);
+setupInternshipRoutes(app);
+setupContactRoutes(app);
+setupAdvertisementRoutes(app);
+
+// Add routes for email and password change requests
+app.post("/requestEmailChange", requestEmailChangeHandler);
+app.post("/requestPasswordChange", requestPasswordChangeHandler);
+
+// Add verification endpoint for email/password changes
+app.get("/verify-change", async (req, res) => {
+  const {token, userId, type} = req.query;
+
+  if (!token || !userId || !type) {
+    return res.status(400).json({error: "Missing required parameters in verification link."});
   }
-  const idToken = authHeader.split("Bearer ")[1];
+
   try {
-    await admin.auth().verifyIdToken(idToken);
-    if (req.headers.referer && !req.headers.referer.includes("")) {
-      return res.status(403).json({error: "Forbidden: Invalid admin access"});
-    }
-    next();
-  } catch (error) {
-    res.status(401).json({error: `Unauthorized: Invalid token - ${error.message}`});
-  }
-};
+    const changeDoc = await admin.firestore().collection("pendingChanges").doc(token).get();
 
-// Team Routes
-app.get("/team", async (_req, res) => {
-  try {
-    const snapshot = await admin.firestore().collection("team").get();
-    const team = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
-    res.json(team);
-  } catch (error) {
-    res.status(500).json({error: "Failed to fetch team members"});
-  }
-});
-
-app.get("/team/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const doc = await admin.firestore().collection("team").doc(id).get();
-    if (!doc.exists) {
-      return res.status(404).json({error: "Team member not found"});
-    }
-    res.json({id: doc.id, ...doc.data()});
-  } catch (error) {
-    res.status(500).json({error: "Failed to fetch team member"});
-  }
-});
-
-app.get("/public/team/:id", async (req, res) => {
-  try {
-    const {id} = req.params;
-    const doc = await admin.firestore().collection("team").doc(id).get();
-    if (!doc.exists) {
-      return res.status(404).json({error: "Team member not found"});
-    }
-    res.json({id: doc.id, ...doc.data()});
-  } catch (error) {
-    res.status(500).json({error: "Failed to fetch team member"});
-  }
-});
-
-app.post("/team", authenticate, async (req, res) => {
-  try {
-    const {name, role, shortBio, fullBio, skills, achievements, video, employeeId, joiningDate, bloodGroup, profilePicture, status, resignationReason, terminationReason} = req.body;
-    if (!name || !role || !employeeId || !joiningDate || !bloodGroup || !status) {
-      return res.status(400).json({error: "Missing required fields"});
-    }
-    if (status === "Resigned" && !resignationReason) {
-      return res.status(400).json({error: "Resignation reason required"});
-    }
-    if (status === "Terminated" && !terminationReason) {
-      return res.status(400).json({error: "Termination reason required"});
+    if (!changeDoc.exists || changeDoc.data().status !== "pending" || changeDoc.data().userId !== userId) {
+      return res.status(400).json({error: "Invalid or expired verification link."});
     }
 
-    let profilePictureUrl = "";
-    if (profilePicture && profilePicture.startsWith("data:image")) {
-      const bucket = storage.bucket();
-      const fileName = `team/${Date.now()}_${employeeId}.jpg`;
-      const file = bucket.file(fileName);
-      const base64Data = profilePicture.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "image/jpeg"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      profilePictureUrl = url;
-    }
+    const {newEmail, newPassword} = changeDoc.data();
 
-    let qrCodeUrl = "";
-    const docRef = await admin.firestore().collection("team").add({});
-    try {
-      const qrData = `https://wyenfos-b7b96.web.app/staff/${docRef.id}`;
-      const bucket = storage.bucket();
-      const qrFileName = `team/qr_${Date.now()}_${employeeId}.png`;
-      const qrFile = bucket.file(qrFileName);
-      const qrBuffer = await QRCode.toBuffer(qrData, {type: "png"});
-      await qrFile.save(qrBuffer, {contentType: "image/png"});
-      const [url] = await qrFile.getSignedUrl({action: "read", expires: "03-09-2491"}); // Fixed: Changed 'file' to 'qrFile'
-      qrCodeUrl = url;
-    } catch (error) {
-      await docRef.delete();
-      return res.status(500).json({error: `Failed to generate QR code: ${error.message}`});
-    }
-
-    await docRef.set({
-      name,
-      role,
-      shortBio: shortBio || "",
-      fullBio: fullBio || "",
-      skills: skills || [],
-      achievements: achievements || "",
-      video: video || "",
-      employeeId,
-      joiningDate,
-      bloodGroup,
-      profilePicture: profilePictureUrl,
-      qrCode: qrCodeUrl,
-      status: status || "Currently Working",
-      resignationReason: resignationReason || "",
-      terminationReason: terminationReason || "",
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    res.status(201).json({id: docRef.id, message: "Team member added", qrCode: qrCodeUrl});
-  } catch (error) {
-    res.status(500).json({error: `Failed to add team member: ${error.message}`});
-  }
-});
-
-app.put("/team/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const {name, role, shortBio, fullBio, skills, achievements, video, employeeId, joiningDate, bloodGroup, profilePicture, status, resignationReason, terminationReason} = req.body;
-    if (!name || !role || !employeeId || !joiningDate || !bloodGroup || !status) {
-      return res.status(400).json({error: "Missing required fields"});
-    }
-    if (status === "Resigned" && !resignationReason) {
-      return res.status(400).json({error: "Resignation reason required"});
-    }
-    if (status === "Terminated" && !terminationReason) {
-      return res.status(400).json({error: "Termination reason required"});
-    }
-
-    let profilePictureUrl = profilePicture;
-    if (profilePicture && profilePicture.startsWith("data:image")) {
-      const bucket = storage.bucket();
-      const fileName = `team/${Date.now()}_${employeeId}.jpg`;
-      const file = bucket.file(fileName);
-      const base64Data = profilePicture.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "image/jpeg"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      profilePictureUrl = url;
-    }
-
-    let qrCodeUrl = "";
-    try {
-      const qrData = `https://wyenfos-b7b96.web.app/staff/${id}`;
-      const bucket = storage.bucket();
-      const qrFileName = `team/qr_${Date.now()}_${employeeId}.png`;
-      const qrFile = bucket.file(qrFileName);
-      const qrBuffer = await QRCode.toBuffer(qrData, {type: "png"});
-      await qrFile.save(qrBuffer, {contentType: "image/png"});
-      const [url] = await qrFile.getSignedUrl({action: "read", expires: "03-09-2491"});
-      qrCodeUrl = url;
-    } catch (error) {
-      return res.status(500).json({error: `Failed to generate QR code: ${error.message}`});
-    }
-
-    await admin.firestore().collection("team").doc(id).update({
-      name,
-      role,
-      shortBio: shortBio || "",
-      fullBio: fullBio || "",
-      skills: skills || [],
-      achievements: achievements || "",
-      video: video || "",
-      employeeId,
-      joiningDate,
-      bloodGroup,
-      profilePicture: profilePictureUrl,
-      qrCode: qrCodeUrl,
-      status: status || "Currently Working",
-      resignationReason: resignationReason || "",
-      terminationReason: terminationReason || "",
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    res.json({message: "Team member updated", qrCode: qrCodeUrl});
-  } catch (error) {
-    res.status(500).json({error: `Failed to update team member: ${error.message}`});
-  }
-});
-
-app.delete("/team/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const doc = await admin.firestore().collection("team").doc(id).get();
-    if (doc.exists) {
-      if (doc.data().profilePicture) {
-        const fileName = doc.data().profilePicture.split("/").pop().split("?")[0];
-        await storage.bucket().file(`team/${fileName}`).delete().catch((err) => {
-          console.error(`Failed to delete team profile picture: ${err.message}`);
-        });
-      }
-      if (doc.data().qrCode) {
-        const qrFileName = doc.data().qrCode.split("/").pop().split("?")[0];
-        await storage.bucket().file(`team/${qrFileName}`).delete().catch((err) => {
-          console.error(`Failed to delete team QR code: ${err.message}`);
-        });
-      }
-    }
-    await admin.firestore().collection("team").doc(id).delete();
-    res.json({message: "Team member deleted"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to delete team member: ${error.message}`});
-  }
-});
-
-// Client Routes
-app.get("/clients", async (_req, res) => {
-  try {
-    const snapshot = await admin.firestore().collection("clients").get();
-    const clients = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
-    res.json(clients);
-  } catch (error) {
-    res.status(500).json({error: "Failed to fetch clients"});
-  }
-});
-
-app.post("/clients", authenticate, async (req, res) => {
-  try {
-    const {name, logo, shortDescription, fullDescription, collaboration, impact, website} = req.body;
-    if (!name) {
-      return res.status(400).json({error: "Missing required field: name"});
-    }
-
-    let logoUrl = "";
-    if (logo && logo.startsWith("data:image")) {
-      const bucket = storage.bucket();
-      const fileName = `clients/${Date.now()}_logo.jpg`;
-      const file = bucket.file(fileName);
-      const base64Data = logo.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "image/jpeg"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      logoUrl = url;
-    }
-
-    const docRef = await admin.firestore().collection("clients").add({
-      name,
-      logo: logoUrl,
-      shortDescription: shortDescription || "",
-      fullDescription: fullDescription || "",
-      collaboration: collaboration || "",
-      impact: impact || "",
-      website: website || "",
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    res.status(201).json({id: docRef.id, message: "Client added"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to add client: ${error.message}`});
-  }
-});
-
-app.put("/clients/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const {name, logo, shortDescription, fullDescription, collaboration, impact, website} = req.body;
-    if (!name) {
-      return res.status(400).json({error: "Missing required field: name"});
-    }
-
-    let logoUrl = logo;
-    if (logo && logo.startsWith("data:image")) {
-      const bucket = storage.bucket();
-      const fileName = `clients/${Date.now()}_logo.jpg`;
-      const file = bucket.file(fileName);
-      const base64Data = logo.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "image/jpeg"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      logoUrl = url;
-    }
-
-    await admin.firestore().collection("clients").doc(id).update({
-      name,
-      logo: logoUrl,
-      shortDescription: shortDescription || "",
-      fullDescription: fullDescription || "",
-      collaboration: collaboration || "",
-      impact: impact || "",
-      website: website || "",
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    res.json({message: "Client updated"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to update client: ${error.message}`});
-  }
-});
-
-app.delete("/clients/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const docRef = admin.firestore().collection("clients").doc(id);
-    const doc = await docRef.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({error: "Client not found"});
-    }
-
-    if (doc.data().logo) {
-      try {
-        const fileName = doc.data().logo.split("/").pop().split("?")[0];
-        const filePath = `clients/${fileName}`;
-        const file = storage.bucket().file(filePath);
-        const [exists] = await file.exists();
-        if (exists) {
-          await file.delete();
-          console.log(`Deleted logo: ${filePath}`);
-        } else {
-          console.warn(`Logo not found in Storage: ${filePath}`);
-        }
-      } catch (err) {
-        console.error(`Failed to delete logo: ${err.message}`);
-      }
-    }
-
-    await docRef.delete();
-    res.json({message: "Client deleted"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to delete client: ${error.message}`});
-  }
-});
-
-// Internship Inquiry Routes
-app.post("/internship-inquiries", async (req, res) => {
-  try {
-    const {name, email, message, role, status} = req.body;
-    if (!name || !email || !message) {
-      return res.status(400).json({error: "Missing required fields"});
-    }
-    const docRef = await admin.firestore().collection("internship_inquiries").add({
-      name,
-      email,
-      message,
-      role: role || "Not specified",
-      status: status || "Pending",
-      timestamp: FieldValue.serverTimestamp(),
-    });
-    res.status(201).json({id: docRef.id, message: "Internship inquiry submitted"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to submit internship inquiry: ${error.message}`});
-  }
-});
-
-app.get("/internship-inquiries", authenticate, async (_req, res) => {
-  try {
-    const snapshot = await admin.firestore().collection("internship_inquiries").orderBy("timestamp", "desc").get();
-    const inquiries = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
-    res.json(inquiries);
-  } catch (error) {
-    res.status(500).json({error: `Failed to fetch internship inquiries: ${error.message}`});
-  }
-});
-
-app.put("/internship-inquiries/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const {status} = req.body;
-    if (!status) {
-      return res.status(400).json({error: "Missing required field: status"});
-    }
-    await admin.firestore().collection("internship_inquiries").doc(id).update({status});
-    res.json({message: `Internship inquiry ${status.toLowerCase()}`});
-  } catch (error) {
-    res.status(500).json({error: `Failed to update internship inquiry: ${error.message}`});
-  }
-});
-
-app.delete("/internship-inquiries/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const docRef = admin.firestore().collection("internship_inquiries").doc(id);
-    const doc = await docRef.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({error: "Internship inquiry not found"});
-    }
-
-    await docRef.delete();
-    res.json({message: "Internship inquiry deleted"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to delete internship inquiry: ${error.message}`});
-  }
-});
-
-// Contact Submission Routes
-app.post("/contacts", async (req, res) => {
-  try {
-    const {name, email, phone, message} = req.body;
-    if (!name || !email || !message) {
-      return res.status(400).json({error: "Missing required fields"});
-    }
-    const docRef = await admin.firestore().collection("contacts").add({
-      name,
-      email,
-      phone: phone || "",
-      message,
-      timestamp: FieldValue.serverTimestamp(),
-    });
-    res.status(201).json({id: docRef.id, message: "Contact message submitted"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to submit contact message: ${error.message}`});
-  }
-});
-
-app.get("/contacts", authenticate, async (_req, res) => {
-  try {
-    const snapshot = await admin.firestore().collection("contacts").get();
-    const contacts = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
-    res.json(contacts);
-  } catch (error) {
-    res.status(500).json({error: `Failed to fetch contact submissions: ${error.message}`});
-  }
-});
-
-app.put("/contacts/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const {name, email, message, phone} = req.body;
-    if (!name || !email || !message) {
-      return res.status(400).json({error: "Missing required fields"});
-    }
-    await admin.firestore().collection("contacts").doc(id).update({
-      name,
-      email,
-      message,
-      phone: phone || "",
-    });
-    res.json({message: "Contact updated"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to update contact: ${error.message}`});
-  }
-});
-
-app.delete("/contacts/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    await admin.firestore().collection("contacts").doc(id).delete();
-    res.json({message: "Contact deleted"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to delete contact: ${error.message}`});
-  }
-});
-
-// Advertisement Routes
-app.get("/advertisements", async (_req, res) => {
-  try {
-    const snapshot = await admin.firestore().collection("advertisements").orderBy("createdAt", "desc").get();
-    const advertisements = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
-    res.json(advertisements);
-  } catch (error) {
-    res.status(500).json({error: `Failed to fetch advertisements: ${error.message}`});
-  }
-});
-
-app.post("/advertisements", authenticate, async (req, res) => {
-  try {
-    const {title, image, video} = req.body;
-    if (!title) {
-      return res.status(400).json({error: "Missing required field: title"});
-    }
-
-    let imageUrl = "";
-    if (image && image.startsWith("data:image")) {
-      const bucket = storage.bucket();
-      const fileName = `advertisements/${Date.now()}_image.jpg`;
-      const file = bucket.file(fileName);
-      const base64Data = image.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "image/jpeg"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      imageUrl = url;
-    }
-
-    let videoUrl = "";
-    if (video && video.startsWith("data:video")) {
-      const bucket = storage.bucket();
-      const fileName = `advertisements/${Date.now()}_video.mp4`;
-      const file = bucket.file(fileName);
-      const base64Data = video.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "video/mp4"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      videoUrl = url;
-    }
-
-    const docRef = await admin.firestore().collection("advertisements").add({
-      title,
-      image: imageUrl,
-      video: videoUrl,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    res.status(201).json({id: docRef.id, message: "Advertisement added"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to add advertisement: ${error.message}`});
-  }
-});
-
-app.put("/advertisements/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const {title, image, video} = req.body;
-    if (!title) {
-      return res.status(400).json({error: "Missing required field: title"});
-    }
-
-    let imageUrl = image;
-    if (image && image.startsWith("data:image")) {
-      const bucket = storage.bucket();
-      const fileName = `advertisements/${Date.now()}_image.jpg`;
-      const file = bucket.file(fileName);
-      const base64Data = image.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "image/jpeg"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      imageUrl = url;
-    }
-
-    let videoUrl = video;
-    if (video && video.startsWith("data:video")) {
-      const bucket = storage.bucket();
-      const fileName = `advertisements/${Date.now()}_video.mp4`;
-      const file = bucket.file(fileName);
-      const base64Data = video.split(",")[1];
-      const buffer = Buffer.from(base64Data, "base64");
-      await file.save(buffer, {contentType: "video/mp4"});
-      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
-      videoUrl = url;
-    }
-
-    await admin.firestore().collection("advertisements").doc(id).update({
-      title,
-      image: imageUrl,
-      video: videoUrl,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    res.json({message: "Advertisement updated"});
-  } catch (error) {
-    res.status(500).json({error: `Failed to update advertisement: ${error.message}`});
-  }
-});
-
-app.delete("/advertisements/:id", authenticate, async (req, res) => {
-  try {
-    const {id} = req.params;
-    const docRef = admin.firestore().collection("advertisements").doc(id);
-    const doc = await docRef.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({error: "Advertisement not found"});
-    }
-
-    const data = doc.data();
-    const deletionErrors = [];
-
-    if (data.image) {
-      try {
-        const fileName = data.image.split("/").pop().split("?")[0];
-        const filePath = `advertisements/${fileName}`;
-        const file = storage.bucket().file(filePath);
-        const [exists] = await file.exists();
-        if (exists) {
-          await file.delete();
-          console.log(`Deleted image: ${filePath}`);
-        } else {
-          console.warn(`Image not found in Storage: ${filePath}`);
-        }
-      } catch (err) {
-        console.error(`Failed to delete image: ${err.message}`);
-        deletionErrors.push(`Image deletion failed: ${err.message}`);
-      }
-    }
-
-    if (data.video) {
-      try {
-        const fileName = data.video.split("/").pop().split("?")[0];
-        const filePath = `advertisements/${fileName}`;
-        const file = storage.bucket().file(filePath);
-        const [exists] = await file.exists();
-        if (exists) {
-          await file.delete();
-          console.log(`Deleted video: ${filePath}`);
-        } else {
-          console.warn(`Video not found in Storage: ${filePath}`);
-        }
-      } catch (err) {
-        console.error(`Failed to delete video: ${err.message}`);
-        deletionErrors.push(`Video deletion failed: ${err.message}`);
-      }
-    }
-
-    await docRef.delete();
-    console.log(`Deleted Firestore document: advertisements/${id}`);
-
-    if (deletionErrors.length > 0) {
-      return res.status(207).json({
-        message: "Advertisement document deleted, but some files could not be deleted",
-        errors: deletionErrors,
+    if (type === "email" && newEmail) {
+      await admin.auth().updateUser(userId, {email: newEmail});
+      await admin.firestore().collection("pendingChanges").doc(token).update({status: "approved"});
+      return res.status(200).json({message: "Email updated successfully. You can now log in with your new email."});
+    } else if (type === "password" && newPassword) {
+      // Use the plain text newPassword to update Firebase Auth
+      await admin.auth().updateUser(userId, {password: newPassword});
+      // Hash the password and update Firestore (for record-keeping, though not strictly necessary)
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await admin.firestore().collection("pendingChanges").doc(token).update({
+        status: "approved",
+        newPassword: hashedPassword, // Store hashed version post-verification
       });
+      return res.status(200).json({message: "Password updated successfully. You can now log in with your new password."});
     }
 
-    res.json({message: "Advertisement deleted successfully"});
+    return res.status(400).json({error: "Invalid change type or missing data for the requested change."});
   } catch (error) {
-    console.error(`Failed to delete advertisement: ${error.message}`);
-    res.status(500).json({error: `Failed to delete advertisement: ${error.message}`});
+    console.error("Verification error:", error);
+    await admin.firestore().collection("pendingChanges").doc(token).update({status: "failed"}).catch(console.error);
+    return res.status(500).json({error: `Verification failed: ${error.message}`});
   }
 });
 
+// Export the main Express app as a Firebase Cloud Function
 exports.api = functions.https.onRequest(app);

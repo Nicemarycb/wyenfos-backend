@@ -14,8 +14,9 @@ module.exports = {
     "no-restricted-globals": ["error", "name", "length"],
     "prefer-arrow-callback": "error",
     "quotes": ["error", "double", {"allowTemplateLiterals": true}],
-    "max-len": ["error", {"code": 200}],
+    "max-len": ["error", {"code": 300}],
     "object-curly-spacing": ["error", "never"],
+    "new-cap": "off",
   },
   overrides: [
     {
