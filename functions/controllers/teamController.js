@@ -66,6 +66,18 @@ const createTeamMember = async (req, res) => {
       profilePictureUrl = url;
     }
 
+    let videoUrl = "";
+    if (video && video.startsWith("data:video")) {
+      const bucket = storage.bucket();
+      const fileName = `team/video_${Date.now()}_${employeeId}.mp4`;
+      const file = bucket.file(fileName);
+      const base64Data = video.split(",")[1];
+      const buffer = Buffer.from(base64Data, "base64");
+      await file.save(buffer, {contentType: "video/mp4"});
+      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
+      videoUrl = url;
+    }
+
     let qrCodeUrl = "";
     const docRef = await admin.firestore().collection("team").add({});
     try {
@@ -89,7 +101,7 @@ const createTeamMember = async (req, res) => {
       fullBio: fullBio || "",
       skills: skills || [],
       achievements: achievements || "",
-      video: video || "",
+      video: videoUrl || "",
       employeeId,
       joiningDate,
       bloodGroup,
@@ -138,6 +150,18 @@ const updateTeamMember = async (req, res) => {
       profilePictureUrl = url;
     }
 
+    let videoUrl = video;
+    if (video && video.startsWith("data:video")) {
+      const bucket = storage.bucket();
+      const fileName = `team/video_${Date.now()}_${employeeId}.mp4`;
+      const file = bucket.file(fileName);
+      const base64Data = video.split(",")[1];
+      const buffer = Buffer.from(base64Data, "base64");
+      await file.save(buffer, {contentType: "video/mp4"});
+      const [url] = await file.getSignedUrl({action: "read", expires: "03-09-2491"});
+      videoUrl = url;
+    }
+
     let qrCodeUrl = "";
     try {
       const qrData = `https://wyenfos-b7b96.web.app/staff/${id}`;
@@ -159,7 +183,7 @@ const updateTeamMember = async (req, res) => {
       fullBio: fullBio || "",
       skills: skills || [],
       achievements: achievements || "",
-      video: video || "",
+      video: videoUrl || "",
       employeeId,
       joiningDate,
       bloodGroup,
@@ -187,6 +211,12 @@ const deleteTeamMember = async (req, res) => {
         const fileName = doc.data().profilePicture.split("/").pop().split("?")[0];
         await storage.bucket().file(`team/${fileName}`).delete().catch((err) => {
           console.error(`Failed to delete team profile picture: ${err.message}`);
+        });
+      }
+      if (doc.data().video) {
+        const fileName = doc.data().video.split("/").pop().split("?")[0];
+        await storage.bucket().file(`team/${fileName}`).delete().catch((err) => {
+          console.error(`Failed to delete team video: ${err.message}`);
         });
       }
       if (doc.data().qrCode) {
