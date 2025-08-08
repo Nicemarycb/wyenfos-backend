@@ -1,5 +1,3 @@
-
-
 const admin = require("firebase-admin");
 const serviceAccount = require("./serviceAccountKey.json");
 const nodemailer = require("nodemailer");
@@ -12,8 +10,9 @@ admin.initializeApp({
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    user: "wyenfos016@gmail.com",
-    pass: "nkzb mnag abfn evzt", // Replace with new App Password
+    user: "shajancl@gmail.com",
+    // pass: "nkzb mnag abfn evzt", // Replace with new App Password
+    pass: "fhtvwkxlilkvzjfy",
   },
 });
 
